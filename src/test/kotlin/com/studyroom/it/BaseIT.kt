@@ -32,6 +32,7 @@ abstract class BaseIT {
         // 按外键依赖顺序清空业务数据
         listOf(
             "refund", "charge", "access_log", "complaint", "support_ticket",
+            "door_scan_attempt", "store_door_event", "repair_ticket",
             "incident", "timeline_event", "seat_sensor_reading",
             "booking", "membership_plan", "seat", "store", "app_user"
         ).forEach { jdbc.update("DELETE FROM $it") }

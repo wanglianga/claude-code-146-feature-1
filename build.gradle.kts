@@ -53,4 +53,6 @@ allOpen {
 
 tasks.withType<Test> {
     useJUnitPlatform()
+    // 受限容器内控制测试 JVM 堆占用（Gradle 客户端外另起的 fork 进程）
+    maxHeapSize = "768m"
 }

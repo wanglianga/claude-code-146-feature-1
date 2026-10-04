@@ -111,10 +111,30 @@ class AccessService(
     }
 
     /**
+     * 门禁故障补偿：客服确认故障后经人工通道放行。
+     * 复用与正常进场完全相同的座位临界区/占用校验/换座逻辑（保证 Redis 占用、传感器、订单状态一致），
+     * 仅跳过门禁时间窗与门禁设备判定；时间轴以 ACCESS_GRANTED_MANUAL 标记，便于与正常放行区分。
+     * 必须在调用方事务内执行（与补偿落库同一事务）。
+     */
+    @Transactional
+    fun enterManually(
+        booking: Booking, user: AppUser, store: Store, doorId: String?, now: Instant, reason: String
+    ): EntryDecision {
+        if (booking.status != BookingStatus.CONFIRMED) {
+            throw ConflictException("INVALID_STATUS", "订单 ${booking.bookingNo} 当前状态 ${booking.status}，不能人工放行")
+        }
+        return assignSeatAndEnter(
+            booking, user, store, doorId, now, timedLate = false,
+            manual = true, entryNote = reason
+        )
+    }
+
+    /**
      * 在座位锁内完成：物理占用校验（传感器）→ 碰撞处理（顺延占用下一座位）→ 换座 → 放行。
      */
     private fun assignSeatAndEnter(
-        booking: Booking, user: AppUser, store: Store, doorId: String?, now: Instant, timedLate: Boolean
+        booking: Booking, user: AppUser, store: Store, doorId: String?, now: Instant, timedLate: Boolean,
+        manual: Boolean = false, entryNote: String? = null
     ): EntryDecision {
         // 包月浮动权益：现场分配同类型空闲座位
         if (booking.type == BookingType.MONTHLY && booking.seat == null) {
@@ -146,9 +166,9 @@ class AccessService(
 
             if (occupant != null && occupant != booking.bookingNo) {
                 // 座位被占：最典型来源——上一位用户迟到后顺延，延时窗口侵占本座位
-                handleOccupiedSeat(booking, user, store, doorId, now, seat, occupant)
+                handleOccupiedSeat(booking, user, store, doorId, now, seat, occupant, manual, entryNote)
             } else {
-                doEnter(booking, user, store, doorId, now, seat, AccessResult.GRANTED, null)
+                doEnter(booking, user, store, doorId, now, seat, AccessResult.GRANTED, entryNote, manual)
             }
         }
     }
@@ -159,7 +179,8 @@ class AccessService(
      */
     private fun handleOccupiedSeat(
         booking: Booking, user: AppUser, store: Store, doorId: String?, now: Instant,
-        occupiedSeat: Seat, occupantBookingNo: String
+        occupiedSeat: Seat, occupantBookingNo: String,
+        manual: Boolean = false, entryNote: String? = null
     ): EntryDecision {
         val alternative = findAlternativeSeat(store, occupiedSeat, now, booking)
         if (alternative == null) {
@@ -184,8 +205,11 @@ class AccessService(
             booking.originalSeatId = booking.seat?.id
             val oldCode = booking.seat?.code
             booking.seat = alternative
-            doEnter(booking, user, store, doorId, now, alternative, AccessResult.GRANTED_REASSIGNED,
-                "原座位 $oldCode 被顺延订单 $occupantBookingNo 占用，自动换座至 ${alternative.code}，差额补偿见客服工单")
+            doEnter(
+                booking, user, store, doorId, now, alternative, AccessResult.GRANTED_REASSIGNED,
+                "原座位 $oldCode 被顺延订单 $occupantBookingNo 占用，自动换座至 ${alternative.code}，差额补偿见客服工单",
+                manual
+            )
         }
     }
 
@@ -204,24 +228,25 @@ class AccessService(
 
     private fun doEnter(
         booking: Booking, user: AppUser, store: Store, doorId: String?, now: Instant,
-        seat: Seat, result: AccessResult, extraDetail: String?
+        seat: Seat, result: AccessResult, extraDetail: String?, manual: Boolean = false
     ): EntryDecision {
         booking.status = BookingStatus.IN_PROGRESS
         booking.actualCheckIn = now
         val lateMin = Duration.between(booking.startTime, now).toMinutes()
-        if (booking.type != BookingType.MONTHLY && lateMin > 0) {
+        // 人工通道放行（门禁故障补偿）不把闸机等待计为用户迟到
+        if (!manual && booking.type != BookingType.MONTHLY && lateMin > 0) {
             booking.late = true
             booking.lateMinutes = lateMin
         }
         seat.status = SeatStatus.OCCUPIED
         val seatId = seat.id!!
 
-        // 包月权益有效期内都可进出；计时单按计划时长上限占用
+        // 包月权益有效期内都可进出；计时单按计划时长上限占用；故障补偿进场时兜底至少留 10 分钟 TTL
         val ttl = if (booking.type == BookingType.MONTHLY)
             Duration.between(now, booking.effectiveEndTime).plusMinutes(10)
         else
             Duration.between(now, booking.effectiveEndTime).plusHours(2)
-        seatLocks.markOccupied(seatId, booking.bookingNo, ttl)
+        seatLocks.markOccupied(seatId, booking.bookingNo, ttl.takeIf { !it.isNegative && !it.isZero } ?: Duration.ofMinutes(10))
         sensorRepo.save(sensorRepo.findBySeatId(seatId)?.apply {
             occupied = true; occupiedByBookingNo = booking.bookingNo; updatedAt = now
         } ?: SeatSensorReading(seat = seat, occupied = true, occupiedByBookingNo = booking.bookingNo, updatedAt = now))
@@ -233,8 +258,12 @@ class AccessService(
         }
         logAccess(user, store, doorId, AccessDirection.IN, result, booking.bookingNo, detail)
         timeline.record(
-            if (result == AccessResult.GRANTED_REASSIGNED) "ACCESS_GRANTED_REASSIGNED" else "ACCESS_GRANTED",
-            store.id, booking.bookingNo, "USER:${user.id}", detail
+            when {
+                manual -> "ACCESS_GRANTED_MANUAL"
+                result == AccessResult.GRANTED_REASSIGNED -> "ACCESS_GRANTED_REASSIGNED"
+                else -> "ACCESS_GRANTED"
+            },
+            store.id, booking.bookingNo, if (manual) "STAFF" else "USER:${user.id}", detail
         )
         return EntryDecision(true, result, booking.bookingNo, seat.code, detail)
     }

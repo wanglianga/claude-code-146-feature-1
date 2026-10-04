@@ -2,6 +2,7 @@ package com.studyroom.web
 
 import com.studyroom.domain.*
 import com.studyroom.service.CheckoutSettlement
+import com.studyroom.service.ConfirmFaultResult
 import com.studyroom.service.StoreMetrics
 import com.studyroom.service.TicketEvidence
 import java.math.BigDecimal
@@ -85,6 +86,35 @@ data class PlanAdjustRequest(val price: Double? = null, val active: Boolean? = n
 
 data class ClockOverrideRequest(val time: Instant?)
 
+// ---------------- 门禁打不开自助补偿 ----------------
+
+data class DoorScanRequest(
+    val userId: Long,
+    val storeId: Long,
+    val errorCode: DoorErrorCode,
+    val doorId: String? = null,
+    /** 扫码设备定位（用于核对是否真的到店） */
+    val clientLat: Double? = null,
+    val clientLng: Double? = null
+)
+
+data class ConfirmDoorFaultRequest(
+    val compensationType: CompensationType,
+    val minutes: Long = 60,
+    val grantManualEntry: Boolean = true,
+    val staffNote: String? = null
+)
+
+data class RejectDoorAttemptRequest(val note: String)
+
+data class ConfirmBatchEntryRequest(val entered: Boolean, val note: String? = null)
+
+data class ResolveRepairRequest(
+    val resolution: String,
+    val assignee: String? = null,
+    val resolveIncident: Boolean = true
+)
+
 // ---------------- 视图 ----------------
 
 data class UserView(
@@ -98,7 +128,8 @@ data class StoreView(
     val unattended: Boolean, val blackout: Boolean,
     val lateGraceMinutes: Int, val earlyEntryMinutes: Int,
     val priceMultiplier: Double, val earlyLeaveRefundRate: Double,
-    val overtimeRate: Double
+    val overtimeRate: Double,
+    val latitude: Double?, val longitude: Double?
 )
 
 data class SeatView(
@@ -215,12 +246,54 @@ data class EvidenceView(
     val incident: IncidentView?
 )
 
+data class DoorScanAttemptView(
+    val attemptNo: String,
+    val userId: Long, val userName: String, val storeId: Long,
+    val bookingNo: String?, val bookingStoreId: Long?, val bookingSeatCode: String?,
+    val doorId: String?, val errorCode: DoorErrorCode,
+    val scannedAt: Instant,
+    val clientLat: Double?, val clientLng: Double?, val locationDistanceMeters: Double?,
+    val paymentStatus: String, val bookingStart: Instant?, val bookingEnd: Instant?,
+    val classification: DoorFailureClassification, val status: DoorAttemptStatus,
+    val suggestedReply: String, val monitorEventNo: String?,
+    val incidentNo: String?, val batchNo: String?, val supportTicketNo: String?,
+    val compensationType: CompensationType?, val compensationMinutes: Long?,
+    val compensatedAmount: BigDecimal?, val actualEntered: Boolean?,
+    val staffNote: String?, val resolvedAt: Instant?
+)
+
+data class StoreDoorEventView(
+    val eventNo: String, val storeId: Long, val incidentNo: String, val doorId: String?,
+    val windowFrom: Instant, val windowTo: Instant,
+    val status: CompensationBatchStatus,
+    val compensationType: CompensationType, val compensationMinutes: Long,
+    val description: String, val repairTicketNo: String?,
+    val totalAttempts: Int, val enteredCount: Int, val notEnteredCount: Int,
+    val openedAt: Instant, val allCheckedAt: Instant?
+)
+
+data class RepairTicketView(
+    val repairNo: String, val storeId: Long, val incidentNo: String, val doorId: String?,
+    val type: IncidentType, val status: RepairTicketStatus,
+    val description: String, val assignee: String?, val openedBy: String,
+    val openedAt: Instant, val resolvedAt: Instant?, val resolution: String?
+)
+
+data class ConfirmFaultView(
+    val attempt: DoorScanAttemptView,
+    val incidentNo: String,
+    val repairNo: String,
+    val manualEntry: EntryDecisionView?,
+    val batchEventNo: String?,
+    val batchAttemptNos: List<String>
+)
+
 object Views {
     fun of(u: AppUser) = UserView(u.id!!, u.phone, u.name, u.realNameVerified, u.role, u.noShowCount, u.blacklisted)
     fun of(s: Store) = StoreView(
         s.id!!, s.name, s.address, s.unattended, s.blackout,
         s.lateGraceMinutes, s.earlyEntryMinutes, s.priceMultiplier,
-        s.earlyLeaveRefundRate, s.overtimeRate
+        s.earlyLeaveRefundRate, s.overtimeRate, s.latitude, s.longitude
     )
     fun of(seat: Seat, sensor: SeatSensorReading? = null) = SeatView(
         seat.id!!, seat.store.id!!, seat.code, seat.seatType, seat.status, seat.zone,
@@ -274,5 +347,38 @@ object Views {
         e.accessLogs.map { of(it) }, e.timeline.map { of(it) },
         e.sensor?.let { of(it) }, e.refunds.map { of(it) },
         e.complaint?.let { of(it) }, e.incident?.let { of(it) }
+    )
+
+    fun of(a: DoorScanAttempt) = DoorScanAttemptView(
+        a.attemptNo, a.user.id!!, a.user.name, a.store.id!!,
+        a.bookingNo, a.bookingStoreId, a.bookingSeatCode,
+        a.doorId, a.errorCode, a.scannedAt,
+        a.clientLat, a.clientLng, a.locationDistanceMeters,
+        a.paymentStatus, a.bookingStart, a.bookingEnd,
+        a.classification, a.status, a.suggestedReply, a.monitorEventNo,
+        a.incidentNo, a.batchNo, a.supportTicketNo,
+        a.compensationType, a.compensationMinutes, a.compensatedAmount,
+        a.actualEntered, a.staffNote, a.resolvedAt
+    )
+
+    fun of(e: StoreDoorEvent) = StoreDoorEventView(
+        e.eventNo, e.store.id!!, e.incidentNo, e.doorId,
+        e.windowFrom, e.windowTo, e.status,
+        e.compensationType, e.compensationMinutes,
+        e.description, e.repairTicketNo,
+        e.totalAttempts, e.enteredCount, e.notEnteredCount,
+        e.openedAt, e.allCheckedAt
+    )
+
+    fun of(r: RepairTicket) = RepairTicketView(
+        r.repairNo, r.store.id!!, r.incidentNo, r.doorId,
+        r.type, r.status, r.description, r.assignee, r.openedBy,
+        r.openedAt, r.resolvedAt, r.resolution
+    )
+
+    fun of(r: ConfirmFaultResult) = ConfirmFaultView(
+        of(r.attempt), r.incidentNo, r.repairNo,
+        r.manualEntry?.let { EntryDecisionView(it.granted, it.result, it.bookingNo, it.seatCode, it.detail) },
+        r.batchEventNo, r.batchAttemptNos
     )
 }
