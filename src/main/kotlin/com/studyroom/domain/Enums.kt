@@ -63,11 +63,83 @@ enum class AccessResult {
     DENIED_LATE_EXPIRED,
     DENIED_DOOR_FAULT,
     DENIED_STORE_BLACKOUT,
-    DENIED_NO_FREE_SEAT
+    DENIED_NO_FREE_SEAT,
+    /** 扫码门店与有效预约门店不一致（走错门店） */
+    DENIED_WRONG_STORE,
+    /** 二维码/凭证无效（用户侧凭证问题） */
+    DENIED_QR_INVALID
 }
 
 enum class IncidentType { DOOR_FAILURE, AC_FAILURE, POWER_OUTAGE, SEAT_DAMAGE, LOCKER_FAILURE }
 enum class IncidentStatus { OPEN, RESOLVED }
+
+/** 门禁扫码失败错误码：硬件读头/闸机类故障与账号/凭证类问题必须可区分 */
+enum class DoorErrorCode {
+    /** 读头无响应（扫码设备硬件故障） */
+    READER_NO_RESPONSE,
+    /** 闸机不开门（机械/控制器故障） */
+    GATE_NOT_OPENING,
+    /** 设备离线，无法校验凭证 */
+    DEVICE_OFFLINE,
+    /** 二维码过期/无效（用户侧凭证问题） */
+    INVALID_QRCODE,
+    /** 账号无通行权限（预约未支付/未到时间/走错门店等，业务侧拒绝） */
+    ACCESS_DENIED,
+    /** 未知错误 */
+    UNKNOWN
+}
+
+/** 扫码失败初判分类，决定后续是设备补偿还是引用订单/定位证据回复 */
+enum class DoorScanClassification {
+    /** 疑似整店门禁设备故障，进入同店同时段回查 */
+    SUSPECTED_DOOR_FAULT,
+    /** 已确认为整店门禁异常（同店同时段多人失败），补偿按门店事件批量生成 */
+    STORE_WIDE_DOOR_FAULT,
+    /** 单个账号异常（仅本人扫码失败），保留日志与定位差异，不自动补偿 */
+    SINGLE_ACCOUNT,
+    /** 预约时间未到 */
+    BOOKING_NOT_STARTED,
+    /** 走错门店（扫码门店与预约门店不一致） */
+    WRONG_STORE,
+    /** 门店停电期间扫码 */
+    STORE_BLACKOUT,
+    /** 无预约/包月权益 */
+    NO_BOOKING
+}
+
+/** 扫码记录处理状态 */
+enum class DoorScanStatus {
+    /** 已记录待客服核实 */
+    RECORDED,
+    /** 已开客服工单 */
+    TICKETED,
+    /** 客服确认门禁故障，已补偿（延长/退费） */
+    COMPENSATED,
+    /** 整店事件批量补偿：已按规则生成补偿，待客服确认用户是否实际进入 */
+    BATCH_PENDING_CONFIRM,
+    /** 客服确认用户实际进入，批量补偿已生效 */
+    BATCH_CONFIRMED_ENTERED,
+    /** 客服确认用户未进入，已退还受影响时段费用 */
+    BATCH_REFUNDED_NOT_ENTERED,
+    /** 批次内全部用户已逐人确认完毕 */
+    BATCH_RESOLVED,
+    /** 客服核实为用户侧原因（未到时间/走错店/凭证问题），回复证据后关闭 */
+    REJECTED_USER_SIDE,
+    /** 单账号异常留证关闭（防止借设备故障名义套退） */
+    CLOSED_SINGLE_ACCOUNT
+}
+
+/** 门禁故障补偿方式 */
+enum class CompensationType {
+    /** 免费延长本次使用时间（免收延时费） */
+    FREE_EXTENSION,
+    /** 退还受影响时段费用 */
+    AFFECTED_PERIOD_REFUND,
+    /** 批量事件下待客服确认实际进入，暂不补偿 */
+    PENDING_ENTRY_CONFIRM,
+    /** 无需补偿（用户侧原因/单账号异常） */
+    NONE
+}
 
 enum class ComplaintCategory { NOISE_NEIGHBOR, SEAT_OCCUPIED, EQUIPMENT_ENV, OTHER }
 enum class ComplaintStatus { OPEN, RESOLVED, REJECTED }

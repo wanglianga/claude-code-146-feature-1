@@ -18,7 +18,8 @@ data class TicketEvidence(
     val booking: Booking,
     val refunds: List<Refund>,
     val complaint: Complaint?,
-    val incident: Incident?
+    val incident: Incident?,
+    val doorScans: List<DoorScanAttempt>
 )
 
 data class TicketDecision(
@@ -37,6 +38,7 @@ class SupportService(
     private val refundRepo: RefundRepository,
     private val complaintRepo: ComplaintRepository,
     private val incidentRepo: IncidentRepository,
+    private val doorScanRepo: DoorScanAttemptRepository,
     private val billing: BillingService,
     private val tl: TimelineService,
     private val clock: TimeProvider
@@ -56,7 +58,8 @@ class SupportService(
             booking = booking,
             refunds = refundRepo.findByBookingIdOrderByCreatedAtDesc(booking.id!!),
             complaint = complaint,
-            incident = incident
+            incident = incident,
+            doorScans = doorScanRepo.findByTicketNo(ticketNo)
         )
     }
 

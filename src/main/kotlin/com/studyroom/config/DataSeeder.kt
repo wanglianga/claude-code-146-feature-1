@@ -38,7 +38,9 @@ class DataSeeder(
                 lateGraceMinutes = 15,
                 earlyEntryMinutes = 15,
                 earlyLeaveRefundRate = 0.5,
-                overtimeRate = 1.5
+                overtimeRate = 1.5,
+                latitude = 31.2304,
+                longitude = 121.4737
             )
         )
         val store2 = storeRepo.save(
@@ -49,7 +51,9 @@ class DataSeeder(
                 lateGraceMinutes = 20,
                 earlyEntryMinutes = 10,
                 earlyLeaveRefundRate = 0.4,
-                overtimeRate = 1.5
+                overtimeRate = 1.5,
+                latitude = 31.1856,
+                longitude = 121.4127
             )
         )
 

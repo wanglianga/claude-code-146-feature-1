@@ -31,6 +31,7 @@ abstract class BaseIT {
     fun resetEnvironment() {
         // 按外键依赖顺序清空业务数据
         listOf(
+            "door_scan_attempt", "door_compensation_batch",
             "refund", "charge", "access_log", "complaint", "support_ticket",
             "incident", "timeline_event", "seat_sensor_reading",
             "booking", "membership_plan", "seat", "store", "app_user"

@@ -92,13 +92,14 @@ class AccessService(
             return deny(AccessResult.DENIED_UNPAID, "订单 ${booking.bookingNo} 状态 ${booking.status}")
         }
 
-        // 5) 迟到宽限判定
+        // 5) 迟到宽限判定（含门禁故障补偿追加的免费宽限分钟）
         if (booking.type != BookingType.MONTHLY) {
-            val lateDeadline = booking.startTime.plus(Duration.ofMinutes(store.lateGraceMinutes.toLong()))
+            val grace = store.lateGraceMinutes.toLong() + booking.compGraceMinutes
+            val lateDeadline = booking.startTime.plus(Duration.ofMinutes(grace))
             if (now.isAfter(lateDeadline)) {
                 return deny(
                     AccessResult.DENIED_LATE_EXPIRED,
-                    "已超过迟到宽限 ${store.lateGraceMinutes} 分钟，请申请顺延或联系客服（订单 ${booking.bookingNo}）"
+                    "已超过迟到宽限 $grace 分钟，请申请顺延或联系客服（订单 ${booking.bookingNo}）"
                 )
             }
             if (now.isBefore(booking.startTime.minus(Duration.ofMinutes(store.earlyEntryMinutes.toLong())))) {

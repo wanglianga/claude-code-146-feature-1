@@ -40,6 +40,9 @@ class Store(
     @Column(nullable = false) var earlyLeaveRefundRate: Double = 0.5,
     /** 超时加价倍率 */
     @Column(nullable = false) var overtimeRate: Double = 1.5,
+    /** 门店经纬度（扫码失败时与客户端定位比对，识别走错门店） */
+    var latitude: Double? = null,
+    var longitude: Double? = null,
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) var id: Long? = null
 )
 

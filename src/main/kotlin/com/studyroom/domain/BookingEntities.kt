@@ -44,6 +44,10 @@ class Booking(
     /** 已确认的延时后结束时间，null 表示未延时 */
     var extendedEndTime: Instant? = null,
     @Column(nullable = false) var extended: Boolean = false,
+    /** 门禁故障补偿：免费延长的分钟数（不收费，进场迟到宽限同步延长） */
+    @Column(nullable = false) var compGraceMinutes: Long = 0,
+    /** 门禁故障补偿：免费延长后的结束时间（门店责任，不计延时费/延时率） */
+    var compEndTime: Instant? = null,
 
     var actualCheckIn: Instant? = null,
     var actualCheckOut: Instant? = null,
@@ -77,7 +81,9 @@ class Booking(
     @Version @Column(nullable = false) var version: Long = 0,
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY) var id: Long? = null
 ) {
-    val effectiveEndTime: Instant get() = extendedEndTime ?: endTime
+    /** 结算/占座截止时间：付费延时与门禁故障免费延长取更晚者 */
+    val effectiveEndTime: Instant
+        get() = listOfNotNull(extendedEndTime, compEndTime, endTime).max()
 }
 
 @Entity

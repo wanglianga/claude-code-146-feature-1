@@ -1,7 +1,7 @@
 # 城市共享自习室：预约 / 门禁延时与退费服务（后端）
 
 Kotlin + Spring Boot 3 + JPA(H2/MySQL) + Redis 实现。覆盖单座、包间、夜间座、包月权益四类预约，
-把**预约、支付、门禁、座位状态、延时/顺延、投诉、设备事件、计费退款、客服工单、运营指标**收敛到同一条
+把**预约、支付、门禁、座位状态、延时/顺延、投诉、设备事件、计费退款、客服工单、运营指标、门禁打不开自动补偿**收敛到同一条
 时间轴上，重点解决无人值守门店的连续事件一致性问题。
 
 - Swagger UI：<http://localhost:8080/swagger-ui.html>
@@ -22,6 +22,7 @@ Kotlin + Spring Boot 3 + JPA(H2/MySQL) + Redis 实现。覆盖单座、包间、
 | 临时延时 | 进行中订单可延时；下一位已在场则拒绝；下一位已支付未进场则预警并在其进场时自动换座 |
 | 连续事件 | **晚到 → 顺延 → 占下一位座位 → 下一位进场自动换座（GRANTED_REASSIGNED）→ 投诉自动归因 USER_LATE 并开工单** |
 | 设备/环境 | 门禁打不开、空调故障、座位/储物柜损坏、门店临时停电；停电强制按门店责任清场结算，期间禁止进入 |
+| 门禁打不开自动补偿 | 预约开始后到店扫码失败，记录**扫码时间、门禁错误码、支付状态、定位差异**；客服确认故障后**免费延长使用时间或退还受影响时段费**并生成门店维修工单；自动回查同店同时段扫码失败，多人失败升级为**整店门禁事件批量补偿**（客服只逐人确认是否实际进入）；预约未到/走错门店时客服回复自动引用订单与定位证据；单账号异常仅留证、禁止借设备故障名义套退 |
 | 投诉 | 邻座噪音、座位被占、设备环境等；自动归因 `DEVICE_FAULT / USER_LATE / PRIVILEGE_ABUSE / USER_BEHAVIOR / OTHER`，同步生成客服工单 |
 | 客服工单 | 证据包聚合：预约、门禁日志、统一时间轴、座位传感器读数、退款记录、设备事件、监控编号、用户申诉、店员处理记录；责任判定（门店/用户/共担）与退款同事务结案 |
 | 运营 | 上座率、延时率、投诉率、设备故障数、争议根因分布；按门店筛出“设备故障 vs 用户迟到/权益滥用”；调价倍率、座位布局、包月规则调整 |
@@ -39,6 +40,12 @@ Kotlin + Spring Boot 3 + JPA(H2/MySQL) + Redis 实现。覆盖单座、包间、
 5. **统一时间轴**：所有状态变化都追加不可变事件（`TimelineEvent`），按预约或门店+时间回放；
    每条门禁日志带确定性监控事件编号（`门店-闸机-结果-时间戳`）。
 6. **退款上限保护**：任何退款不得超过 `已付 - 已退 - 押金扣赔`，防止重复赔付。
+7. **门禁补偿一致链**：免费延长写入独立的 `compEndTime/compGraceMinutes`（免费、不计延时率），
+   进场迟到宽限、座位占用 TTL、碰撞判定统一取 `max(付费延时, 故障补偿延长)`；
+   延长若碰撞后续已支付订单，**同事务回退为退受影响时段费**，不产生侵占。
+8. **故障与套退分流**：扫码失败先按“硬件错误码 × 是否在有效预约窗 × 定位门店差”初判；
+   仅硬件类+有效窗口进入故障补偿，未到时间/走错门店/凭证无效/无单只留证且回复引用订单与定位证据，
+   从接口层拒绝用故障确认接口对用户侧记录自动赔付。
 
 ## 3. 工程结构
 
@@ -49,10 +56,11 @@ src/main/kotlin/com/studyroom
 ├── support/     全局异常、Redis 座位锁、可覆写业务时钟
 ├── service/     BookingService / AccessService / BillingService / IncidentService
 │                ComplaintService / SupportService / OperationsService / SensorService
+│                DoorCompensationService（扫码留证、故障补偿、整店批量、防套退）
 ├── web/         REST 控制器与 DTO/视图映射
 └── config/      OpenAPI 配置、启动种子数据
-src/test/kotlin/com/studyroom/it   12 个端到端集成测试（自动拉起独立端口 Redis）
-scripts/         两个 curl 版全链路演示脚本
+src/test/kotlin/com/studyroom/it   20 个端到端集成测试（自动拉起独立端口 Redis）
+scripts/         三个 curl 版全链路演示脚本
 ```
 
 ## 4. 本地启动
@@ -114,7 +122,7 @@ java -jar build/libs/studyroom-booking-1.0.0.jar
 ```
 
 测试会自动在 **6390 端口**启动独立 `redis-server`（db15，与本地 6379 隔离）。
-覆盖 12 个用例、5 个测试类：
+覆盖 20 个用例、6 个测试类：
 
 - `NormalFlowIT`：支付→放行→订单 IN_PROGRESS→离场退押金释放；储物柜未清空扣 30 元押金
 - `CollisionChainIT`：晚到 10 分钟→顺延 40 分钟→碰撞预警→B 进场自动换座 A01→A02→
@@ -122,8 +130,13 @@ java -jar build/libs/studyroom-booking-1.0.0.jar
 - `ExceptionalScenariosIT`：门禁故障拒绝并带事件编号；停电强制清场全额退剩余费用+押金且禁入；提前离场部分退费
 - `MembershipIT`：固定座包月多次进出（权益保留、座位释放、押金不重复退）；到期包月权益扫描关闭并退押金；重叠包月权益拒绝；浮动包月现场分座
 - `SupportAndOpsIT`：空调故障投诉自动归因 DEVICE_FAULT、证据包、申诉、门店责任退款结案、运营指标
+- `DoorCompensationIT`（8 用例）：确认故障免费延长+维修工单+迟到宽限同步延长；同店同时段回查三人升级整店批次、
+  逐人确认进入（免费延长）/未进入（退受影响时段费）后批次结案；在途维修事件新扫码自动并入批次；
+  预约未到/走错门店引用订单+时间窗+定位距离回复并禁自动赔付；单账号异常（无单+二维码无效）留证防套退；
+  免费延长碰撞下一位已支付订单自动回退退费且不影响下一位进场；REFUND 偏好按等待时长退受影响时段费、
+  免费延长后按时离场无超时费
 
-最近一次执行结果：**12 tests, 0 failures / 0 errors**（`./gradlew test` BUILD SUCCESSFUL）。
+最近一次执行结果：**20 tests, 0 failures / 0 errors**（`./gradlew test` BUILD SUCCESSFUL）。
 
 ### 6.2 HTTP 全链路手工验证（已实际执行）
 
@@ -135,6 +148,9 @@ java -jar build/libs/studyroom-booking-1.0.0.jar
 
 # 场景二：停电强制清场退费释放、停电禁入、空调故障投诉归因 DEVICE_FAULT、运营指标
 ./scripts/e2e-incident-demo.sh
+
+# 场景三：门禁打不开自动补偿（扫码留证→确认故障免费延长/退费+维修工单→整店批量逐人确认→证据回复→防套退）
+./scripts/e2e-door-demo.sh
 ```
 
 > 演示脚本依赖新内存库；若应用里已跑过其他数据，重启应用即可（默认 H2 内存模式）。
@@ -145,6 +161,14 @@ java -jar build/libs/studyroom-booking-1.0.0.jar
 
 - 预约：`POST /api/bookings`、`/pay`、`/cancel`、`/{no}/postpone`、`/{no}/extend`、`GET /{no}`、`/{no}/timeline`
 - 门禁：`POST /api/access/enter`、`POST /api/access/leave`、`POST /api/sensors/report`
+- 门禁打不开自动补偿：
+  `POST /api/access/scan-failure`（登记扫码失败：错误码+定位）、
+  `POST /api/door-scans/{scanNo}/confirm-fault`（客服确认故障→延长/退费+维修工单+回查）、
+  `POST /api/door-scans/{scanNo}/confirm-entry`（整店批次逐人确认是否实际进入）、
+  `POST /api/door-scans/{scanNo}/reply`（用户侧原因引用订单/定位证据回复）、
+  `GET /api/door-scans/{scanNo}`、`GET /api/door-scans?storeId&from&to`、
+  `GET /api/door-scans/by-user/{userId}`、
+  `GET /api/door-batches/{batchNo}`、`GET /api/stores/{storeId}/door-batches`
 - 门店/设备：`POST /api/incidents`、`POST /api/stores/{id}/blackout`、`POST /api/stores/no-show-scan`
 - 投诉/工单：`POST /api/complaints`、`GET /api/tickets/{no}/evidence`、`POST /api/tickets/{no}/appeal`、`POST /api/tickets/{no}/decide`
 - 运营：`GET /api/ops/stores/{id}/metrics`、`GET /api/ops/stores/{id}/disputes`、
